@@ -2,6 +2,7 @@ const express = require('express');
 const bodyParser = require('body-parser');
 const cookieParser = require('cookie-parser');
 const path = require('path');
+const { spawn } = require('child_process');  // Add this for running Python script
 
 const app = express();
 
@@ -34,6 +35,63 @@ app.post('/api/logout', (req, res) => {
     res.json({ message: 'Logout successful' });
 });
 
+// Prediction endpoint
+app.post('/api/predict', (req, res) => {
+    if (!req.cookies || req.cookies.isLoggedIn !== 'true') {
+        return res.status(401).json({ message: 'Not authorized' });
+    }
+
+    const { age, gender, cigsPerDay, sysBP, totChol, diabetes, bmi } = req.body;
+
+    // Validate inputs
+    if (!age || !gender === undefined || !cigsPerDay || !sysBP || !totChol || !diabetes === undefined || !bmi) {
+        return res.status(400).json({ message: 'Missing required fields' });
+    }
+
+    // Convert the inputs to an array matching the ML model's expected format
+    const inputData = [age, gender, cigsPerDay, sysBP, totChol, diabetes, bmi];
+
+    // Spawn Python process
+    const pythonProcess = spawn('python', [
+        path.join(__dirname, 'private', 'ml_model.py'),
+        ...inputData.map(String)  // Convert all inputs to strings
+    ]);
+
+    let predictionData = '';
+    let errorData = '';
+
+    // Collect data from Python script
+    pythonProcess.stdout.on('data', (data) => {
+        predictionData += data.toString();
+    });
+
+    pythonProcess.stderr.on('data', (data) => {
+        errorData += data.toString();
+    });
+
+    // Handle process completion
+    pythonProcess.on('close', (code) => {
+        if (code !== 0) {
+            console.error('Python script error:', errorData);
+            return res.status(500).json({ message: 'Error making prediction' });
+        }
+
+        try {
+            // Get the last line of output (which should be our prediction)
+            const lines = predictionData.trim().split('\n');
+            const prediction = parseInt(lines[lines.length - 1]);
+
+            if (prediction !== 0 && prediction !== 1) {
+                throw new Error('Invalid prediction value');
+            }
+
+            res.json({ prediction });
+        } catch (err) {
+            console.error('Error parsing prediction:', err);
+            res.status(500).json({ message: 'Error processing prediction result' });
+        }
+    });
+});
 
 // Middleware to protect the dashboard
 app.get('/dashboard.html', (req, res, next) => {
@@ -58,7 +116,6 @@ app.get('/dashboard.js', (req, res, next) => {
         res.redirect('/login.html');
     }
 });
-
 
 // Start the server
 const PORT = 3000;
